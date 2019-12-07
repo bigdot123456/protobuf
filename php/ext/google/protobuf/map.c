@@ -167,7 +167,8 @@ static void map_begin_internal(Map *map, MapIter *iter) {
   upb_strtable_begin(&iter->it, &map->table);
 }
 
-static HashTable *map_field_get_gc(zval *object, CACHED_VALUE **table, int *n) {
+static HashTable *map_field_get_gc(zval *object, CACHED_VALUE **table,
+                                   int *n TSRMLS_DC) {
   // TODO(teboring): Unfortunately, zend engine does not support garbage
   // collection for custom array. We have to use zend engine's native array
   // instead.
@@ -192,7 +193,8 @@ static inline void php_proto_map_string_release(void *value) {
 }
 static inline void php_proto_map_object_release(void *value) {
   zend_object* object = *(zend_object**)value;
-  if(--GC_REFCOUNT(object) == 0) {
+  GC_DELREF(object);
+  if(GC_REFCOUNT(object) == 0) {
     zend_objects_store_del(object);
   }
 }
@@ -240,6 +242,18 @@ zend_class_implements(map_field_type TSRMLS_CC, 3, spl_ce_ArrayAccess,
 map_field_handlers->write_dimension = map_field_write_dimension;
 map_field_handlers->get_gc = map_field_get_gc;
 PHP_PROTO_INIT_CLASS_END
+
+void map_field_ensure_created(const upb_fielddef *field,
+                              CACHED_VALUE *map_field PHP_PROTO_TSRMLS_DC) {
+  if (ZVAL_IS_NULL(CACHED_PTR_TO_ZVAL_PTR(map_field))) {
+    zval_ptr_dtor(map_field);
+#if PHP_MAJOR_VERSION < 7
+    MAKE_STD_ZVAL(CACHED_PTR_TO_ZVAL_PTR(map_field));
+#endif
+    map_field_create_with_field(map_field_type, field,
+                                map_field PHP_PROTO_TSRMLS_CC);
+  }
+}
 
 void map_field_create_with_field(const zend_class_entry *ce,
                                  const upb_fielddef *field,
@@ -293,7 +307,7 @@ static bool map_field_read_dimension(zval *object, zval *key, int type,
   }
 }
 
-static bool map_index_unset(Map *intern, const char* keyval, int length) {
+static void map_index_unset(Map *intern, const char* keyval, int length) {
   upb_value old_value;
   if (upb_strtable_remove2(&intern->table, keyval, length, &old_value)) {
     switch (intern->value_type) {
@@ -302,7 +316,8 @@ static bool map_index_unset(Map *intern, const char* keyval, int length) {
         zval_ptr_dtor(upb_value_memory(&old_value));
 #else
         zend_object* object = *(zend_object**)upb_value_memory(&old_value);
-        if(--GC_REFCOUNT(object) == 0) {
+        GC_DELREF(object);
+        if(GC_REFCOUNT(object) == 0) {
           zend_objects_store_del(object);
         }
 #endif
